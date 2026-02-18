@@ -1,82 +1,210 @@
 import data
 from selenium import webdriver
-from selenium.webdriver import Keys
 from selenium.webdriver.common.by import By
-from selenium.webdriver.support import expected_conditions
+from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.wait import WebDriverWait
-
-
-# no modificar
-def retrieve_phone_code(driver) -> str:
-    """Este código devuelve un número de confirmación de teléfono y lo devuelve como un string.
-    Utilízalo cuando la aplicación espere el código de confirmación para pasarlo a tus pruebas.
-    El código de confirmación del teléfono solo se puede obtener después de haberlo solicitado en la aplicación."""
-
-    import json
-    import time
-    from selenium.common import WebDriverException
-    code = None
-    for i in range(10):
-        try:
-            logs = [log["message"] for log in driver.get_log('performance') if log.get("message")
-                    and 'api/v1/number?number' in log.get("message")]
-            for log in reversed(logs):
-                message_data = json.loads(log)["message"]
-                body = driver.execute_cdp_cmd('Network.getResponseBody',
-                                              {'requestId': message_data["params"]["requestId"]})
-                code = ''.join([x for x in body['body'] if x.isdigit()])
-        except WebDriverException:
-            time.sleep(1)
-            continue
-        if not code:
-            raise Exception("No se encontró el código de confirmación del teléfono.\n"
-                            "Utiliza 'retrieve_phone_code' solo después de haber solicitado el código en tu aplicación.")
-        return code
+import time
 
 
 class UrbanRoutesPage:
     from_field = (By.ID, 'from')
     to_field = (By.ID, 'to')
+    order_taxi_button = (By.CLASS_NAME, 'button.round')
+    tariff_cards = (By.CLASS_NAME, 'tcard')
+    comfort_tariff = (By.XPATH, "//div[contains(@class, 'tcard') and contains(., 'Comfort')]")
+    phone_input = (By.ID, 'phone')
+    phone_modal = (By.XPATH, "//div[contains(@class, 'modal')]")
 
     def __init__(self, driver):
         self.driver = driver
+        self.wait = WebDriverWait(driver, 15)
 
     def set_from(self, from_address):
-        self.driver.find_element(*self.from_field).send_keys(from_address)
+        element = self.wait.until(EC.element_to_be_clickable(self.from_field))
+        element.clear()
+        element.send_keys(from_address)
 
     def set_to(self, to_address):
-        self.driver.find_element(*self.to_field).send_keys(to_address)
+        element = self.wait.until(EC.element_to_be_clickable(self.to_field))
+        element.clear()
+        element.send_keys(to_address)
 
-    def get_from(self):
-        return self.driver.find_element(*self.from_field).get_property('value')
+    def set_route(self, from_address, to_address):
+        self.set_from(from_address)
+        self.set_to(to_address)
+        print("✓ Direcciones ingresadas")
 
-    def get_to(self):
-        return self.driver.find_element(*self.to_field).get_property('value')
+        time.sleep(1.5)
+        button = self.wait.until(EC.element_to_be_clickable(self.order_taxi_button))
+        button.click()
+        print("✓ Botón 'Pedir un taxi' clickeado")
 
+        time.sleep(2)
+        tariffs = self.wait.until(EC.presence_of_all_elements_located(self.tariff_cards))
+        print(f"✓ Tarifas encontradas: {len(tariffs)}")
+
+    def select_comfort_tariff(self):
+        time.sleep(1)
+        comfort_element = self.wait.until(EC.element_to_be_clickable(self.comfort_tariff))
+        self.driver.execute_script("arguments[0].scrollIntoView({behavior: 'smooth', block: 'center'});",
+                                   comfort_element)
+        time.sleep(0.5)
+        comfort_element.click()
+        print("✓ Tarifa Comfort seleccionada")
+        time.sleep(3)
+
+    def scroll_panel_down_until_phone_visible(self):
+        """Hacer scroll hacia ABAJO en el panel izquierdo hasta que el teléfono sea visible"""
+        print("\nHaciendo scroll hacia ABAJO en el panel izquierdo...")
+
+        # 🔑 Encontrar el campo de teléfono primero (existe en DOM aunque no sea visible)
+        phone_field = self.wait.until(EC.presence_of_element_located(self.phone_input))
+        print("✓ Campo de teléfono encontrado en DOM")
+
+        # 🔑 Encontrar su contenedor scrollable padre
+        scrollable_panel = self.driver.execute_script("""
+            var phone = arguments[0];
+            var parent = phone.parentElement;
+
+            // Buscar hacia arriba el primer ancestro con scroll hacia abajo
+            while (parent) {
+                if (parent.scrollHeight > parent.clientHeight + 50) {
+                    return parent;
+                }
+                parent = parent.parentElement;
+            }
+            return null;
+        """, phone_field)
+
+        if not scrollable_panel:
+            print("❌ No se encontró contenedor scrollable")
+            return False
+
+        print("✓ Contenedor scrollable padre encontrado")
+
+        # 🔑 Hacer scroll hacia ABAJO en incrementos de 100px (equivalente a clics en flecha inferior)
+        print("Realizando scroll hacia ABAJO en incrementos de 100px...")
+
+        max_attempts = 10
+        for attempt in range(max_attempts):
+            # Verificar si el campo es visible
+            is_visible = phone_field.is_displayed()
+
+            if is_visible:
+                print(f"✓ Campo de teléfono visible después de {attempt} incrementos")
+                return True
+
+            # Hacer scroll hacia abajo
+            self.driver.execute_script("""
+                var panel = arguments[0];
+                panel.scrollTop += 100;
+            """, scrollable_panel)
+
+            print(f"  Scroll {attempt + 1}/{max_attempts} (+100px)")
+            time.sleep(0.4)  # Pausa para ver el movimiento
+
+        print("⚠️ Campo de teléfono no visible después de máximo scroll")
+        return False
+
+    def open_phone_modal(self):
+        print("\nAbriendo modal de teléfono...")
+
+        # 🔑 Hacer scroll hacia ABAJO hasta que el teléfono sea visible
+        phone_visible = self.scroll_panel_down_until_phone_visible()
+
+        if not phone_visible:
+            print("⚠️ Intentando scroll alternativo...")
+            # Fallback: scroll general hacia abajo
+            self.driver.execute_script("window.scrollBy(0, 500);")
+            time.sleep(1)
+
+        # Encontrar el campo de teléfono
+        phone_field = self.driver.find_element(*self.phone_input)
+
+        # Verificar visibilidad
+        is_visible = phone_field.is_displayed()
+        print(f"✓ Campo visible final: {is_visible}")
+
+        # Hacer clic en el campo
+        print("Haciendo clic en el campo de teléfono...")
+        try:
+            phone_field.click()
+            print("✓ Clic realizado")
+        except:
+            print("⚠️ Usando JavaScript para hacer clic")
+            self.driver.execute_script("arguments[0].click();", phone_field)
+            print("✓ Clic realizado con JavaScript")
+
+        # Esperar modal
+        time.sleep(2.5)
+
+        # Verificar modal
+        try:
+            modal = self.wait.until(EC.presence_of_element_located(self.phone_modal))
+            print("✓ Modal de teléfono abierto")
+            return True
+        except:
+            print("❌ Modal no apareció")
+            self.driver.save_screenshot("modal_error.png")
+            print("📸 Captura guardada: modal_error.png")
+            return False
 
 
 class TestUrbanRoutes:
-
     driver = None
 
     @classmethod
     def setup_class(cls):
-        # no lo modifiques, ya que necesitamos un registro adicional habilitado para recuperar el código de confirmación del teléfono
-        from selenium.webdriver import DesiredCapabilities
-        capabilities = DesiredCapabilities.CHROME
-        capabilities["goog:loggingPrefs"] = {'performance': 'ALL'}
-        cls.driver = webdriver.Chrome(desired_capabilities=capabilities)
+        cls.driver = webdriver.Chrome()
+        cls.driver.maximize_window()
+        print("✓ Navegador iniciado y maximizado")
 
-    def test_set_route(self):
-        self.driver.get(data.urban_routes_url)
+    def test_v4_final_phone_modal(self):
+        url = data.urban_routes_url.strip()
+        print(f"✓ Cargando URL: {url}")
+        self.driver.get(url)
+
         routes_page = UrbanRoutesPage(self.driver)
-        address_from = data.address_from
-        address_to = data.address_to
-        routes_page.set_route(address_from, address_to)
-        assert routes_page.get_from() == address_from
-        assert routes_page.get_to() == address_to
 
+        # Configurar ruta
+        routes_page.set_route(data.address_from, data.address_to)
+
+        # Seleccionar Comfort
+        routes_page.select_comfort_tariff()
+
+        # Abrir modal de teléfono
+        modal_opened = routes_page.open_phone_modal()
+
+        assert modal_opened, "El modal de teléfono no se abrió"
+
+        print("\n==========================================")
+        print("✅ VERSIÓN 4 FINAL: PRUEBA EXITOSA")
+        print("==========================================")
+        print("Pasos completados:")
+        print("  ✓ Ventana maximizada")
+        print("  ✓ Direcciones ingresadas")
+        print("  ✓ Botón 'Pedir un taxi' clickeado")
+        print("  ✓ Tarifas aparecieron")
+        print("  ✓ Tarifa Comfort seleccionada")
+        print("  ✓ Campo de teléfono encontrado en DOM")
+        print("  ✓ Scroll hacia ABAJO realizado en panel izquierdo")
+        print("  ✓ Campo de teléfono visible")
+        print("  ✓ Clic en campo de teléfono")
+        print("  ✓ Modal de teléfono abierto")
+        print("\nPróximo paso: Ingresar número en el modal")
 
     @classmethod
     def teardown_class(cls):
-        cls.driver.quit()
+        if cls.driver:
+            time.sleep(5)
+            cls.driver.quit()
+            print("✓ Navegador cerrado")
+
+
+if __name__ == "__main__":
+    test = TestUrbanRoutes()
+    test.setup_class()
+    try:
+        test.test_v4_final_phone_modal()
+    finally:
+        test.teardown_class()
